@@ -3603,6 +3603,7 @@ impl Package {
                     file,
                     ext,
                     index,
+                    proxy: None,
                     wheels: vec![],
                 };
                 uv_distribution_types::SourceDist::Registry(reg_dist)
@@ -3679,6 +3680,7 @@ impl Package {
                     file,
                     ext,
                     index,
+                    proxy: None,
                     wheels: vec![],
                 };
                 uv_distribution_types::SourceDist::Registry(reg_dist)
@@ -5524,6 +5526,7 @@ impl Wheel {
                     filename,
                     file,
                     index,
+                    proxy: None,
                 })
             }
             RegistrySource::Path(index_path) => {
@@ -5575,6 +5578,7 @@ impl Wheel {
                     filename,
                     file,
                     index,
+                    proxy: None,
                 })
             }
         }

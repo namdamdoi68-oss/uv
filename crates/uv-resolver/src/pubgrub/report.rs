@@ -15,7 +15,7 @@ use rustc_hash::FxHashMap;
 use uv_configuration::{IndexStrategy, NoBinary, NoBuild};
 use uv_distribution_types::{
     IncompatibleDist, IncompatibleSource, IncompatibleWheel, Index, IndexCapabilities,
-    IndexLocations, IndexMetadata, IndexUrl, RequiresPython,
+    IndexLocations, IndexMetadata, IndexRoutes, IndexUrl, RequiresPython,
 };
 use uv_normalize::PackageName;
 use uv_pep440::{Version, VersionSpecifier, VersionSpecifiers};
@@ -728,6 +728,8 @@ impl PubGrubReportFormatter<'_> {
         inherited_exclude_newer_ranges: &FxHashMap<PackageName, Range<Version>>,
         output_hints: &mut IndexSet<PubGrubHint>,
     ) {
+        let index_routes = IndexRoutes::try_from(index_locations).ok();
+
         // Check for disjoint target hints (only applicable to universal resolution).
         if let Some(markers) = env.fork_markers() {
             // TODO(konsti): This is a crude approximation to telling the user the difference
@@ -762,6 +764,7 @@ impl PubGrubReportFormatter<'_> {
                             set,
                             selector,
                             index_locations,
+                            index_routes.as_ref(),
                             index_capabilities,
                             available_indexes,
                             unavailable_packages,
@@ -820,6 +823,7 @@ impl PubGrubReportFormatter<'_> {
                             set,
                             selector,
                             index_locations,
+                            index_routes.as_ref(),
                             index_capabilities,
                             available_indexes,
                             unavailable_packages,
@@ -1157,6 +1161,7 @@ impl PubGrubReportFormatter<'_> {
         set: &Range<Version>,
         selector: &CandidateSelector,
         index_locations: &IndexLocations,
+        index_routes: Option<&IndexRoutes>,
         index_capabilities: &IndexCapabilities,
         available_indexes: &FxHashMap<PackageName, BTreeSet<IndexUrl>>,
         unavailable_packages: &FxHashMap<PackageName, UnavailablePackage>,
@@ -1277,19 +1282,22 @@ impl PubGrubReportFormatter<'_> {
         }
 
         // Add hints due to an index returning an unauthorized response.
-        for index in index_locations.allowed_indexes() {
-            if index_capabilities.unauthorized(&index.url) {
-                hints.insert(PubGrubHint::UnauthorizedIndex {
-                    index: index.url.clone(),
-                });
-            }
-            if index_capabilities.forbidden(&index.url) {
-                hints.insert(PubGrubHint::ForbiddenIndex {
-                    index: index.url.clone(),
-                    any_successful_response: available_indexes
-                        .values()
-                        .any(|indexes| indexes.contains(&index.url)),
-                });
+        if let Some(index_routes) = index_routes {
+            for index in index_locations.allowed_indexes() {
+                let route = index_routes.route_for(&index.url);
+                if index_capabilities.unauthorized(route.physical) {
+                    hints.insert(PubGrubHint::UnauthorizedIndex {
+                        index: route.physical.clone(),
+                    });
+                }
+                if index_capabilities.forbidden(route.physical) {
+                    hints.insert(PubGrubHint::ForbiddenIndex {
+                        index: route.physical.clone(),
+                        any_successful_response: available_indexes
+                            .values()
+                            .any(|indexes| indexes.contains(&index.url)),
+                    });
+                }
             }
         }
     }

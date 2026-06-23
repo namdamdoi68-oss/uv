@@ -7199,6 +7199,7 @@ dependencies = [
  "toml_edit",
  "tracing",
  "url",
+ "uv-cache",
  "uv-cache-key",
  "uv-client",
  "uv-configuration",
@@ -7229,6 +7230,7 @@ dependencies = [
  "uv-version",
  "uv-warnings",
  "uv-workspace",
+ "wiremock",
 ]
 
 [[package]]
