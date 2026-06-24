@@ -2124,8 +2124,8 @@ mod tests {
     use uv_cache::{Cache, CacheBucket, WheelCache};
     use uv_distribution_filename::WheelFilename;
     use uv_distribution_types::{
-        BuiltDist, File, FileLocation, Index, IndexCapabilities, IndexFormat, IndexLocations,
-        IndexMetadataRef, IndexReference, IndexUrl, ProxyIndex, RegistryBuiltDist,
+        ArtifactUrlMap, BuiltDist, File, FileLocation, Index, IndexCapabilities, IndexFormat,
+        IndexLocations, IndexMetadataRef, IndexReference, IndexUrl, ProxyIndex, RegistryBuiltDist,
         RegistryBuiltWheel, ToUrlError,
     };
     use uv_git::GitResolver;
@@ -2160,6 +2160,13 @@ mod tests {
         )
     }
 
+    fn artifact_url_map() -> Result<ArtifactUrlMap, Error> {
+        Ok(ArtifactUrlMap::single(
+            DisplaySafeUrl::parse("https://proxy.example/files")?,
+            DisplaySafeUrl::parse("https://canonical.example/files")?,
+        ))
+    }
+
     async fn assert_no_index(
         client: &RegistryClient,
         package: &str,
@@ -2192,12 +2199,18 @@ mod tests {
         );
     }
 
-    fn proxy_index_locations(canonical: &IndexUrl, proxy: &IndexUrl) -> IndexLocations {
-        IndexLocations::new(vec![Index::from(canonical.clone())], Vec::new(), false)
-            .with_proxy_indexes(vec![ProxyIndex {
-                index: IndexReference::Url(canonical.clone()),
-                url: proxy.clone(),
-            }])
+    fn proxy_index_locations(
+        canonical: &IndexUrl,
+        proxy: &IndexUrl,
+    ) -> Result<IndexLocations, Error> {
+        Ok(
+            IndexLocations::new(vec![Index::from(canonical.clone())], Vec::new(), false)
+                .with_proxy_indexes(vec![ProxyIndex {
+                    index: IndexReference::Url(canonical.clone()),
+                    url: proxy.clone(),
+                    artifact_url_map: artifact_url_map()?,
+                }]),
+        )
     }
 
     fn proxy_registry_client(
@@ -2206,7 +2219,7 @@ mod tests {
     ) -> Result<RegistryClient, Error> {
         Ok(
             RegistryClientBuilder::new(BaseClientBuilder::default(), Cache::temp()?)
-                .index_locations(proxy_index_locations(canonical, proxy))
+                .index_locations(proxy_index_locations(canonical, proxy)?)
                 .build()?,
         )
     }
@@ -2304,6 +2317,7 @@ mod tests {
         let locations = IndexLocations::default().with_proxy_indexes(vec![ProxyIndex {
             index: IndexReference::Url(index.clone()),
             url: index,
+            artifact_url_map: artifact_url_map()?,
         }]);
         let builder = RegistryClientBuilder::new(BaseClientBuilder::default(), Cache::temp()?)
             .index_locations(locations);
@@ -2456,6 +2470,7 @@ mod tests {
             .with_proxy_indexes(vec![ProxyIndex {
                 index: IndexReference::Url(canonical.clone()),
                 url: proxy,
+                artifact_url_map: artifact_url_map()?,
             }]);
         let client =
             RegistryClientBuilder::new(BaseClientBuilder::default().retries(0), Cache::temp()?)
@@ -2537,6 +2552,7 @@ mod tests {
         let locations = IndexLocations::default().with_proxy_indexes(vec![ProxyIndex {
             index: IndexReference::Url(canonical.clone()),
             url: proxy,
+            artifact_url_map: artifact_url_map()?,
         }]);
         let client = RegistryClientBuilder::new(BaseClientBuilder::default(), Cache::temp()?)
             .index_locations(locations)
@@ -2576,6 +2592,7 @@ mod tests {
         let locations = IndexLocations::default().with_proxy_indexes(vec![ProxyIndex {
             index: IndexReference::Url(canonical.clone()),
             url: proxy.clone(),
+            artifact_url_map: artifact_url_map()?,
         }]);
         let client = RegistryClientBuilder::new(BaseClientBuilder::default(), Cache::temp()?)
             .index_locations(locations)
@@ -2660,6 +2677,7 @@ mod tests {
                 .with_proxy_indexes(vec![ProxyIndex {
                     index: IndexReference::Url(canonical.clone()),
                     url: proxy,
+                    artifact_url_map: artifact_url_map()?,
                 }]);
         let client = RegistryClientBuilder::new(BaseClientBuilder::default(), Cache::temp()?)
             .index_locations(locations)
@@ -2792,6 +2810,7 @@ mod tests {
                 .with_proxy_indexes(vec![ProxyIndex {
                     index: IndexReference::Url(canonical.clone()),
                     url: proxy.clone(),
+                    artifact_url_map: artifact_url_map()?,
                 }]);
         let cache = Cache::temp()?;
         let client = RegistryClientBuilder::new(BaseClientBuilder::default(), cache.clone())
@@ -2912,6 +2931,7 @@ mod tests {
         let locations = IndexLocations::default().with_proxy_indexes(vec![ProxyIndex {
             index: IndexReference::Url(canonical.clone()),
             url: proxy.clone(),
+            artifact_url_map: artifact_url_map()?,
         }]);
         let client = RegistryClientBuilder::new(BaseClientBuilder::default(), Cache::temp()?)
             .index_locations(locations)
@@ -2946,6 +2966,7 @@ mod tests {
         let locations = IndexLocations::default().with_proxy_indexes(vec![ProxyIndex {
             index: IndexReference::Url(canonical.clone()),
             url: proxy.clone(),
+            artifact_url_map: artifact_url_map()?,
         }]);
         let client = RegistryClientBuilder::new(BaseClientBuilder::default(), Cache::temp()?)
             .index_locations(locations)
@@ -3001,6 +3022,7 @@ mod tests {
         let locations = IndexLocations::default().with_proxy_indexes(vec![ProxyIndex {
             index: IndexReference::Url(canonical.clone()),
             url: proxy.clone(),
+            artifact_url_map: artifact_url_map()?,
         }]);
         let client = RegistryClientBuilder::new(BaseClientBuilder::default(), Cache::temp()?)
             .index_locations(locations)
