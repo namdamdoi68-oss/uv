@@ -17,6 +17,8 @@ mod help;
 
 mod network;
 
+mod proxy_index;
+
 #[cfg(feature = "test-pypi")]
 mod publish;
 
