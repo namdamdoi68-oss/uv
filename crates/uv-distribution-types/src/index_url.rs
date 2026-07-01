@@ -625,6 +625,14 @@ impl IndexRoutes {
             physical,
         }
     }
+
+    /// Return the configured proxy routes.
+    pub fn proxy_routes(&self) -> impl Iterator<Item = IndexRoute<'_>> {
+        self.routes.iter().map(|(canonical, physical)| IndexRoute {
+            canonical,
+            physical,
+        })
+    }
 }
 
 impl TryFrom<&IndexLocations> for IndexRoutes {
