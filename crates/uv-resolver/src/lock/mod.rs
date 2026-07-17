@@ -30,8 +30,8 @@ use uv_distribution_types::{
     Dist, FileLocation, GitDirectorySourceDist, GitPathBuiltDist, GitPathSourceDist, Identifier,
     IndexLocations, IndexMetadata, IndexUrl, Name, PYPI_URL, PathBuiltDist, PathSourceDist,
     RegistryBuiltDist, RegistryBuiltWheel, RegistrySourceDist, RemoteSource, Requirement,
-    RequirementSource, RequiresPython, ResolvedDist, SimplifiedMarkerTree, StaticMetadata,
-    ToUrlError, UrlString,
+    RequirementSource, RequiresPython, ResolvedDist, SimplifiedMarkerTree,
+    SourceDist as DistributionSourceDist, StaticMetadata, ToUrlError, UrlString,
 };
 use uv_fs::{
     PortablePath, PortablePathBuf, Simplified, normalize_path, relative_to, try_relative_to_if,
@@ -458,6 +458,29 @@ impl Lock {
             }
         }
 
+        // Build backends can emit a normalized absolute file URL for a selected local source.
+        // Reuse the selected source's URL when serializing matching metadata
+        // requirements so they retain its original path representation.
+        let selected_local_sources = resolution
+            .base_dists()
+            .filter_map(|(_, dist)| match &dist.dist {
+                ResolvedDist::Installable { dist, .. } => match dist.as_ref() {
+                    Dist::Built(BuiltDist::Path(path)) => {
+                        Some(((&path.filename.name, path.install_path.as_ref()), &path.url))
+                    }
+                    Dist::Source(DistributionSourceDist::Path(path)) => {
+                        Some(((&path.name, path.install_path.as_ref()), &path.url))
+                    }
+                    Dist::Source(DistributionSourceDist::Directory(directory)) => Some((
+                        (&directory.name, directory.install_path.as_ref()),
+                        &directory.url,
+                    )),
+                    _ => None,
+                },
+                ResolvedDist::Installed { .. } => None,
+            })
+            .collect::<FxHashMap<_, _>>();
+
         // Lock all base packages.
         for (node_index, dist) in resolution.base_dists() {
             // If there are multiple distributions for the same package, include the markers of all
@@ -477,8 +500,13 @@ impl Lock {
                 vec![]
             };
 
-            let mut package =
-                Package::from_annotated_dist(dist, fork_markers, root, index_locations)?;
+            let mut package = Package::from_annotated_dist(
+                dist,
+                fork_markers,
+                root,
+                index_locations,
+                &selected_local_sources,
+            )?;
             let mut wheel_marker = dist.marker;
             if let Some(supported_environments_marker) = supported_environments_marker {
                 wheel_marker.and(supported_environments_marker);
@@ -2866,6 +2894,7 @@ impl Package {
         fork_markers: Vec<UniversalMarker>,
         root: &Path,
         index_locations: &IndexLocations,
+        selected_local_sources: &FxHashMap<(&PackageName, &Path), &VerbatimUrl>,
     ) -> Result<Self, LockError> {
         let id = PackageId::from_annotated_dist(annotated_dist, root)?;
         let sdist = SourceDist::from_annotated_dist(&id, annotated_dist, index_locations)?;
@@ -2880,9 +2909,10 @@ impl Package {
                 .requires_dist
                 .iter()
                 .cloned()
-                .map(|requirement| requirement.relative_to(root))
-                .collect::<Result<_, _>>()
-                .map_err(LockErrorKind::RequirementRelativePath)?
+                .map(|requirement| {
+                    normalized_metadata_requirement(requirement, root, selected_local_sources)
+                })
+                .collect::<Result<_, _>>()?
         };
         let provides_extra = if id.source.is_immutable() {
             Box::default()
@@ -2907,9 +2937,14 @@ impl Package {
                     let requirements = requirements
                         .iter()
                         .cloned()
-                        .map(|requirement| requirement.relative_to(root))
-                        .collect::<Result<_, _>>()
-                        .map_err(LockErrorKind::RequirementRelativePath)?;
+                        .map(|requirement| {
+                            normalized_metadata_requirement(
+                                requirement,
+                                root,
+                                selected_local_sources,
+                            )
+                        })
+                        .collect::<Result<_, _>>()?;
                     Ok::<_, LockError>((group.clone(), requirements))
                 })
                 .collect::<Result<_, _>>()?
@@ -3677,6 +3712,30 @@ impl Package {
             is_local: self.id.source.is_local(),
         }
     }
+}
+
+/// Use a selected local source's URL when serializing equivalent package metadata.
+fn normalized_metadata_requirement(
+    mut requirement: Requirement,
+    root: &Path,
+    selected_local_sources: &FxHashMap<(&PackageName, &Path), &VerbatimUrl>,
+) -> Result<Requirement, LockError> {
+    if let RequirementSource::Directory {
+        install_path, url, ..
+    }
+    | RequirementSource::Path {
+        install_path, url, ..
+    } = &mut requirement.source
+        && let Some(selected_url) =
+            selected_local_sources.get(&(&requirement.name, install_path.as_ref()))
+    {
+        *url = (**selected_url).clone();
+    }
+
+    requirement
+        .relative_to(root)
+        .map_err(LockErrorKind::RequirementRelativePath)
+        .map_err(LockError::from)
 }
 
 /// Attempts to construct a `VerbatimUrl` from the given normalized `Path`.

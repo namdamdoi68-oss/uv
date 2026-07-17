@@ -7,7 +7,7 @@ use uv_cache_key::CanonicalUrl;
 use uv_git::GitResolver;
 use uv_normalize::PackageName;
 use uv_pep508::VerbatimUrl;
-use uv_pypi_types::{ParsedDirectoryUrl, ParsedUrl, VerbatimParsedUrl};
+use uv_pypi_types::{ParsedUrl, VerbatimParsedUrl};
 
 use crate::resolver::ForkMap;
 use crate::{DependencyMode, Manifest, ResolveError, ResolverEnvironment};
@@ -32,6 +32,13 @@ pub(crate) struct Urls {
     regular: FxHashMap<PackageName, Vec<VerbatimParsedUrl>>,
 }
 
+/// A URL requirement and whether it came from a user-provided requirement.
+#[derive(Debug)]
+struct UrlCandidate {
+    url: VerbatimParsedUrl,
+    has_user_origin: bool,
+}
+
 impl Urls {
     pub(crate) fn from_manifest(
         manifest: &Manifest,
@@ -39,7 +46,7 @@ impl Urls {
         git: &GitResolver,
         dependencies: DependencyMode,
     ) -> Self {
-        let mut regular: FxHashMap<PackageName, Vec<VerbatimParsedUrl>> = FxHashMap::default();
+        let mut regular: FxHashMap<PackageName, Vec<UrlCandidate>> = FxHashMap::default();
         let mut overrides = ForkMap::default();
 
         // Add all direct regular requirements and constraints URL.
@@ -48,31 +55,40 @@ impl Urls {
                 // Registry requirement
                 continue;
             };
+            let has_user_origin = requirement.origin.is_some();
 
             let package_urls = regular.entry(requirement.name.clone()).or_default();
-            if let Some(package_url) = package_urls
-                .iter_mut()
-                .find(|package_url| same_resource(&package_url.parsed_url, &url.parsed_url, git))
-            {
-                // Allow editables to override non-editables.
-                let previous_editable = package_url.is_editable();
-                *package_url = url;
-                if previous_editable {
-                    if let VerbatimParsedUrl {
-                        parsed_url: ParsedUrl::Directory(ParsedDirectoryUrl { editable, .. }),
-                        verbatim: _,
-                    } = package_url
-                    {
-                        if editable.is_none() {
-                            debug!("Allowing an editable variant of {}", &package_url.verbatim);
-                            *editable = Some(true);
-                        }
-                    }
+            if let Some(package_url) = package_urls.iter_mut().find(|package_url| {
+                same_resource(&package_url.url.parsed_url, &url.parsed_url, git)
+            }) {
+                // Metadata can use a normalized absolute URL for the same resource as a
+                // user-provided relative path. Preserve the user-provided URL so the selected
+                // distribution retains its original path representation.
+                if package_url.has_user_origin && !has_user_origin {
+                    debug!("Preserving user-provided URL {}", &package_url.url.verbatim);
+                } else {
+                    *package_url = UrlCandidate {
+                        url,
+                        has_user_origin,
+                    };
                 }
             } else {
-                package_urls.push(url);
+                package_urls.push(UrlCandidate {
+                    url,
+                    has_user_origin,
+                });
             }
         }
+
+        let mut regular: FxHashMap<PackageName, Vec<VerbatimParsedUrl>> = regular
+            .into_iter()
+            .map(|(name, urls)| {
+                (
+                    name,
+                    urls.into_iter().map(|candidate| candidate.url).collect(),
+                )
+            })
+            .collect();
 
         // Add all URLs from overrides. If there is an override URL, all other URLs from
         // requirements and constraints are moot and will be removed.

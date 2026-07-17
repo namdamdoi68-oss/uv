@@ -17,7 +17,10 @@ use uv_fs::{Simplified, normalize_absolute_path, normalize_path};
 use uv_git_types::{GitLfs, GitReference, GitUrl, GitUrlParseError};
 use uv_normalize::{ExtraName, GroupName, PackageName};
 use uv_pep440::VersionSpecifiers;
-use uv_pep508::{MarkerTree, VerbatimUrl, VersionOrUrl, looks_like_git_repository};
+use uv_pep508::{
+    MarkerTree, RequirementOrigin as Pep508RequirementOrigin, VerbatimUrl, VersionOrUrl,
+    looks_like_git_repository,
+};
 use uv_pypi_types::{
     ConflictItem, ParsedGitDirectoryUrl, ParsedGitPathUrl, ParsedUrl, ParsedUrlError,
     VerbatimParsedUrl,
@@ -32,11 +35,27 @@ use crate::metadata::GitWorkspaceMember;
 pub struct LoweredRequirement(Requirement);
 
 #[derive(Debug, Clone, Copy)]
-enum RequirementOrigin {
+enum SourceScope {
     /// The `tool.uv.sources` were read from the project.
     Project,
     /// The `tool.uv.sources` were read from the workspace root.
     Workspace,
+}
+
+impl SourceScope {
+    /// Return the user-facing origin for a requirement lowered from `tool.uv.sources`.
+    fn requirement_origin(
+        self,
+        project_name: Option<&PackageName>,
+        project_dir: &Path,
+    ) -> Pep508RequirementOrigin {
+        match self {
+            Self::Project => project_name.map_or(Pep508RequirementOrigin::Workspace, |name| {
+                Pep508RequirementOrigin::Project(project_dir.to_path_buf(), name.clone())
+            }),
+            Self::Workspace => Pep508RequirementOrigin::Workspace,
+        }
+    }
 }
 
 impl LoweredRequirement {
@@ -59,11 +78,11 @@ impl LoweredRequirement {
     ) -> impl Iterator<Item = Result<Self, LoweringError>> + use<'data> + 'data {
         // Identify the source from the `tool.uv.sources` table.
         let (sources, origin) = if let Some(source) = project_sources.get(&requirement.name) {
-            (Some(source), RequirementOrigin::Project)
+            (Some(source), SourceScope::Project)
         } else if let Some(source) = workspace.sources().get(&requirement.name) {
-            (Some(source), RequirementOrigin::Workspace)
+            (Some(source), SourceScope::Workspace)
         } else {
-            (None, RequirementOrigin::Project)
+            (None, SourceScope::Project)
         };
 
         // If the source only applies to a given extra or dependency group, filter it out.
@@ -309,7 +328,10 @@ impl LoweredRequirement {
                         groups: Box::new([]),
                         marker,
                         source,
-                        origin: requirement.origin.clone(),
+                        origin: requirement
+                            .origin
+                            .clone()
+                            .or_else(|| Some(origin.requirement_origin(project_name, project_dir))),
                     }))
                 }
             }))
@@ -421,7 +443,7 @@ impl LoweredRequirement {
                             let source = path_source(
                                 path,
                                 None,
-                                RequirementOrigin::Project,
+                                SourceScope::Project,
                                 dir,
                                 dir,
                                 editable,
@@ -468,7 +490,7 @@ impl LoweredRequirement {
                                 &workspace_ref,
                                 editable,
                                 true,
-                                RequirementOrigin::Project,
+                                SourceScope::Project,
                                 dir,
                                 dir,
                                 None,
@@ -815,7 +837,7 @@ async fn workspace_source(
     workspace_ref: &WorkspaceReference,
     source_editable: Option<bool>,
     default_editable: bool,
-    origin: RequirementOrigin,
+    origin: SourceScope,
     project_dir: &Path,
     workspace_root: &Path,
     current_workspace: Option<&Workspace>,
@@ -824,8 +846,8 @@ async fn workspace_source(
     workspace_cache: &WorkspaceCache,
 ) -> Result<RequirementSource, LoweringError> {
     let base = match origin {
-        RequirementOrigin::Project => project_dir,
-        RequirementOrigin::Workspace => workspace_root,
+        SourceScope::Project => project_dir,
+        SourceScope::Workspace => workspace_root,
     };
 
     match workspace_ref {
@@ -910,7 +932,7 @@ async fn workspace_source(
 fn path_source(
     path: impl AsRef<Path>,
     git_member: Option<&GitWorkspaceMember>,
-    origin: RequirementOrigin,
+    origin: SourceScope,
     project_dir: &Path,
     workspace_root: &Path,
     editable: Option<bool>,
@@ -919,8 +941,8 @@ fn path_source(
 ) -> Result<RequirementSource, LoweringError> {
     let path = path.as_ref();
     let base = match origin {
-        RequirementOrigin::Project => project_dir,
-        RequirementOrigin::Workspace => workspace_root,
+        SourceScope::Project => project_dir,
+        SourceScope::Workspace => workspace_root,
     };
     let url = VerbatimUrl::from_path(path, base)?;
     let url = if preserve_given {
