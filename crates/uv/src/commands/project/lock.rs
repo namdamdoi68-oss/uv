@@ -219,6 +219,8 @@ pub(crate) async fn lock(
             preview,
         )
         .with_refresh(&refresh)
+        // We only want to check the contents with `--refresh` specifically.
+        .with_lockfile_contents_check(matches!(&refresh, Refresh::All(..)))
         .execute(target),
     )
     .await
@@ -296,6 +298,7 @@ pub(crate) struct LockOperation<'env> {
     mode: LockMode<'env>,
     constraints: Vec<NameRequirementSpecification>,
     refresh: Option<&'env Refresh>,
+    check_lockfile_contents: bool,
     settings: &'env ResolverSettings,
     client_builder: &'env BaseClientBuilder<'env>,
     state: &'env UniversalState,
@@ -325,6 +328,7 @@ impl<'env> LockOperation<'env> {
             mode,
             constraints: vec![],
             refresh: None,
+            check_lockfile_contents: false,
             settings,
             client_builder,
             state,
@@ -351,6 +355,13 @@ impl<'env> LockOperation<'env> {
     #[must_use]
     pub(crate) fn with_refresh(mut self, refresh: &'env Refresh) -> Self {
         self.refresh = Some(refresh);
+        self
+    }
+
+    /// Compare the serialized lock against the existing lockfile contents.
+    #[must_use]
+    pub(crate) fn with_lockfile_contents_check(mut self, enabled: bool) -> Self {
+        self.check_lockfile_contents = enabled;
         self
     }
 
@@ -381,16 +392,22 @@ impl<'env> LockOperation<'env> {
             LockMode::Locked(interpreter, lock_source) => {
                 // Read the existing lockfile.
                 let lock_filename = target.lock_filename();
-                let existing = target.read().await?.ok_or(ProjectError::MissingLockfile(
-                    lock_source.into(),
-                    lock_filename,
-                ))?;
+                let (existing, existing_contents) =
+                    target
+                        .read_with_contents()
+                        .await?
+                        .ok_or(ProjectError::MissingLockfile(
+                            lock_source.into(),
+                            lock_filename,
+                        ))?;
 
                 // Perform the lock operation, but don't write the lockfile to disk.
                 let result = Box::pin(do_lock(
                     target,
                     interpreter,
                     Some(existing),
+                    Some(existing_contents),
+                    self.check_lockfile_contents,
                     self.constraints,
                     self.refresh,
                     self.settings,
@@ -418,14 +435,16 @@ impl<'env> LockOperation<'env> {
             }
             LockMode::Write(interpreter) | LockMode::DryRun(interpreter) => {
                 // Read the existing lockfile.
-                let existing = match target.read().await {
-                    Ok(Some(existing)) => Some(existing),
-                    Ok(None) => None,
+                let (existing, existing_contents) = match target.read_with_contents().await {
+                    Ok(Some((existing, existing_contents))) => {
+                        (Some(existing), Some(existing_contents))
+                    }
+                    Ok(None) => (None, None),
                     Err(ProjectError::Lock(err)) => {
                         warn_user!(
                             "Failed to read existing lockfile; ignoring locked requirements: {err}"
                         );
-                        None
+                        (None, None)
                     }
                     Err(err) => return Err(err),
                 };
@@ -435,6 +454,8 @@ impl<'env> LockOperation<'env> {
                     target,
                     interpreter,
                     existing,
+                    existing_contents,
+                    self.check_lockfile_contents,
                     self.constraints,
                     self.refresh,
                     self.settings,
@@ -467,6 +488,8 @@ async fn do_lock(
     target: LockTarget<'_>,
     interpreter: &Interpreter,
     existing_lock: Option<Lock>,
+    existing_lock_contents: Option<String>,
+    check_lockfile_contents: bool,
     external: Vec<NameRequirementSpecification>,
     refresh: Option<&Refresh>,
     settings: &ResolverSettings,
@@ -1067,7 +1090,14 @@ async fn do_lock(
             .with_conflicts(conflicts)
             .with_required_environments(lock_required_environments.into_markers());
 
-            if previous.as_ref().is_some_and(|previous| *previous == lock) {
+            let unchanged = if check_lockfile_contents {
+                previous.is_some()
+                    && existing_lock_contents.as_deref() == Some(lock.to_toml()?.as_str())
+            } else {
+                previous.as_ref().is_some_and(|previous| *previous == lock)
+            };
+
+            if unchanged {
                 Ok(LockResult::Unchanged(lock))
             } else {
                 Ok(LockResult::Changed(previous, lock))

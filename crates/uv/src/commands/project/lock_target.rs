@@ -294,6 +294,16 @@ impl<'lock> LockTarget<'lock> {
     ///
     /// Returns `Ok(None)` if the lockfile does not exist.
     pub(crate) async fn read(self) -> Result<Option<Lock>, ProjectError> {
+        Ok(self
+            .read_with_contents()
+            .await?
+            .map(|(lock, _contents)| lock))
+    }
+
+    /// Read the lockfile and return the exact contents that were parsed.
+    ///
+    /// Returns `Ok(None)` if the lockfile does not exist.
+    pub(crate) async fn read_with_contents(self) -> Result<Option<(Lock, String)>, ProjectError> {
         let lock_path = self.lock_path();
         match fs_err::tokio::read_to_string(&lock_path).await {
             Ok(encoded) => {
@@ -308,7 +318,7 @@ impl<'lock> LockTarget<'lock> {
                                 lock.version(),
                             ));
                         }
-                        Ok(Some(lock))
+                        Ok(Some((lock, encoded)))
                     }
                     Err(err) => {
                         // If we failed to parse the lockfile, determine whether it's a supported
