@@ -332,10 +332,14 @@ impl<'lock> InstallTarget<'lock> {
             return Ok(());
         }
         match self {
-            Self::Project { lock, .. }
-            | Self::Projects { lock, .. }
-            | Self::Workspace { lock, .. }
-            | Self::NonProjectWorkspace { lock, .. } => {
+            Self::Project {
+                lock, workspace, ..
+            }
+            | Self::Projects {
+                lock, workspace, ..
+            }
+            | Self::Workspace { lock, workspace }
+            | Self::NonProjectWorkspace { lock, workspace } => {
                 if !lock.supports_provides_extra() {
                     return Ok(());
                 }
@@ -350,7 +354,31 @@ impl<'lock> InstallTarget<'lock> {
                 // Collect all known extras from the member packages.
                 let known_extras = member_packages
                     .iter()
-                    .flat_map(|package| package.provides_extras().iter())
+                    .flat_map(|package| package.provides_extras())
+                    .chain(
+                        workspace
+                            .packages()
+                            .iter()
+                            .filter(|(name, _)| {
+                                lock.supports_missing_package_metadata() && roots.contains(*name)
+                            })
+                            .flat_map(|(_, member)| {
+                                member
+                                    .pyproject_toml()
+                                    .project
+                                    .as_ref()
+                                    .and_then(|project| project.optional_dependencies.as_ref())
+                                    .into_iter()
+                                    .flat_map(|optional_dependencies| {
+                                        optional_dependencies.iter().filter_map(
+                                            |(extra, requirements)| {
+                                                requirements.is_empty().then_some(extra)
+                                            },
+                                        )
+                                    })
+                            }),
+                    )
+                    .cloned()
                     .collect::<FxHashSet<_>>();
 
                 for extra in extras.explicit_names() {
@@ -404,7 +432,28 @@ impl<'lock> InstallTarget<'lock> {
                 // Extract the dependency groups that are exclusive to the workspace root.
                 let known_groups = member_packages
                     .iter()
-                    .flat_map(|package| package.dependency_groups().keys().map(Cow::Borrowed))
+                    .flat_map(|package| package.dependency_groups().map(Cow::Borrowed))
+                    .chain(
+                        workspace
+                            .packages()
+                            .iter()
+                            .filter(|(name, _)| {
+                                lock.supports_missing_package_metadata() && roots.contains(*name)
+                            })
+                            .flat_map(|(_, member)| {
+                                member
+                                    .pyproject_toml()
+                                    .dependency_groups
+                                    .as_ref()
+                                    .into_iter()
+                                    .flat_map(|dependency_groups| {
+                                        dependency_groups
+                                            .into_iter()
+                                            .filter(|(_, requirements)| requirements.is_empty())
+                                            .map(|(group, _)| Cow::Borrowed(group))
+                                    })
+                            }),
+                    )
                     .chain(
                         workspace
                             .workspace_dependency_groups()
@@ -422,7 +471,12 @@ impl<'lock> InstallTarget<'lock> {
                     }
                 }
             }
-            Self::Project { lock, .. } | Self::Projects { lock, .. } => {
+            Self::Project {
+                lock, workspace, ..
+            }
+            | Self::Projects {
+                lock, workspace, ..
+            } => {
                 let roots = self.roots().collect::<FxHashSet<_>>();
                 let member_packages: Vec<&Package> = lock
                     .packages()
@@ -433,7 +487,28 @@ impl<'lock> InstallTarget<'lock> {
                 // Extract the dependency groups defined in the relevant member(s).
                 let known_groups = member_packages
                     .iter()
-                    .flat_map(|package| package.dependency_groups().keys())
+                    .flat_map(|package| package.dependency_groups())
+                    .chain(
+                        workspace
+                            .packages()
+                            .iter()
+                            .filter(|(name, _)| {
+                                lock.supports_missing_package_metadata() && roots.contains(*name)
+                            })
+                            .flat_map(|(_, member)| {
+                                member
+                                    .pyproject_toml()
+                                    .dependency_groups
+                                    .as_ref()
+                                    .into_iter()
+                                    .flat_map(|dependency_groups| {
+                                        dependency_groups
+                                            .into_iter()
+                                            .filter(|(_, requirements)| requirements.is_empty())
+                                            .map(|(group, _)| group)
+                                    })
+                            }),
+                    )
                     .collect::<FxHashSet<_>>();
 
                 for group in groups.explicit_names() {
